@@ -53,14 +53,33 @@ struct LidarView: View {
 
             drawRobot(context: context, center: center)
 
-            // 點雲:機器人座標 x 前方 → 螢幕上方;y 左方 → 螢幕左方
+            // 座標轉換:機器人座標 x 前方 → 螢幕上方;y 左方 → 螢幕左方
+            func toScreen(_ p: CGPoint) -> CGPoint {
+                CGPoint(x: center.x - p.y * scale, y: center.y - p.x * scale)
+            }
+
+            // 點雲(有開直線擬合時點畫淡一點,讓線段當主角)
             var dots = Path()
             for p in lidar.points {
-                let sx = center.x - p.y * scale
-                let sy = center.y - p.x * scale
-                dots.addRect(CGRect(x: sx - 1.5, y: sy - 1.5, width: 3, height: 3))
+                let s = toScreen(p)
+                dots.addRect(CGRect(x: s.x - 1.5, y: s.y - 1.5, width: 3, height: 3))
             }
-            context.fill(dots, with: .color(lidar.isWarning ? .red : .green))
+            let dotColor: Color = lidar.isWarning ? .red : .green
+            context.fill(dots, with: .color(lidar.fitLines
+                                            ? dotColor.opacity(0.35) : dotColor))
+
+            // 擬合出的直線段
+            if lidar.fitLines {
+                var strokes = Path()
+                for line in lidar.lines {
+                    strokes.move(to: toScreen(line[0]))
+                    for p in line.dropFirst() { strokes.addLine(to: toScreen(p)) }
+                }
+                context.stroke(strokes,
+                               with: .color(lidar.isWarning ? .red : .cyan),
+                               style: StrokeStyle(lineWidth: 2, lineCap: .round,
+                                                  lineJoin: .round))
+            }
         }
         .background(Color.black.opacity(0.85))
         .cornerRadius(8)
@@ -106,6 +125,10 @@ struct LidarView: View {
             }
 
             Spacer()
+            Toggle("濾噪", isOn: $lidar.filterNoise)
+                .toggleStyle(.checkbox)
+            Toggle("直線", isOn: $lidar.fitLines)
+                .toggleStyle(.checkbox)
             // 顯示範圍縮放
             Text("範圍")
                 .font(.caption)

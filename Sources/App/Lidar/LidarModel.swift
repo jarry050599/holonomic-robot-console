@@ -7,6 +7,14 @@ final class LidarModel: ObservableObject {
 
     /// 點雲(機器人座標系,單位公尺:x 前方、y 左方)
     @Published private(set) var points: [CGPoint] = []
+    /// 直線擬合結果(每條折線 ≥ 2 個頂點)
+    @Published private(set) var lines: [[CGPoint]] = []
+    /// 雜訊過濾開關(中值濾波 + 孤立點剔除)
+    @Published var filterNoise = true { didSet { reprocessLast() } }
+    /// 直線擬合開關(分群 + Douglas-Peucker)
+    @Published var fitLines = true { didSet { reprocessLast() } }
+    /// 最後一筆原始掃描(切換開關時重新處理用)
+    private var lastScan: LaserScan?
     /// 掃描更新頻率(Hz,移動平均)
     @Published private(set) var scanHz: Double = 0
     /// 最近障礙物距離(公尺);nil = 無有效點
@@ -46,21 +54,21 @@ final class LidarModel: ObservableObject {
         apply(scan)
     }
 
-    /// 把 LaserScan 轉成點雲並更新統計
+    /// 把 LaserScan 經過濾與擬合後更新顯示資料
     private func apply(_ scan: LaserScan) {
         hasData = true
-        var pts: [CGPoint] = []
-        pts.reserveCapacity(scan.ranges.count)
-        var nearest = Double.infinity
-        for (i, range) in scan.ranges.enumerated() {
-            // rosbridge 把 inf/nan 轉成 null;再過濾量程外的值
-            guard let r = range, r >= scan.rangeMin, r <= scan.rangeMax else { continue }
-            let angle = scan.angleMin + Double(i) * scan.angleIncrement
-            pts.append(CGPoint(x: r * cos(angle), y: r * sin(angle)))
-            if r < nearest { nearest = r }
-        }
-        points = pts
-        nearestDistance = nearest.isFinite ? nearest : nil
+        lastScan = scan
+        let result = ScanProcessing.process(scan: scan,
+                                            filterNoise: filterNoise,
+                                            fitLines: fitLines)
+        points = result.points
+        lines = result.lines
+        nearestDistance = result.nearest
+    }
+
+    /// 切換過濾/擬合開關時,用最後一筆掃描立即重算
+    private func reprocessLast() {
+        if let lastScan { apply(lastScan) }
     }
 
     /// 用最近 10 筆到達間隔估掃描頻率

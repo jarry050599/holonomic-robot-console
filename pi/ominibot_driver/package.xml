@@ -9,8 +9,9 @@
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
-  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>python3-serial</depend>
+  <depend>python3-numpy</depend>
 
   <export>
     <build_type>ament_python</build_type>

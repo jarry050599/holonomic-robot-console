@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 # coding=utf-8
-"""Ominibot HV 串列協定層(純協定,不依賴 ROS)。
+"""OminiBot HV 串列協定層(純協定,不依賴 ROS)。
 
-協定來源:iCShop/CIRCUS Pi 官方 ROSKY repo 的 ominibot_car_com.py
-(https://github.com/CIRCUSPi/ROSKY),本檔重新實作並修正上游
-omnibot() 內 Vy/Vz 誤用 abs(Vx) 的 bug。
+協定來源:官方文件 https://github.com/iCShopMgr/OminiBotHV(Circus Pi)
+本車為三顆全向輪(MOTO1~3),UART 115200;板子收到 10 bytes 後
+自動由 APP 模式切換為 UART 控制模式,不需額外初始化。
 
-速度封包(全向輪模式,板子內建運動學):
-    FF FE 01 | Vx(int16 BE) | Vy(int16 BE) | Vz(int16 BE) | 方向位元組
-    三軸速度都送絕對值;方向位元組:
-        bit2 = Vx 反向(Vx < 0 時設 1)
-        bit1 = Vy 反向(Vy < 0 時設 1)
-        bit0 = Vz 方向(Vz >= 0 時設 1,沿用上游/韌體慣例)
+速度控制幀(Mode=1,固定 10 bytes):
+    TX[0..1] 0xFF 0xFE 幀頭
+    TX[2]    0x01(速度控制)
+    TX[3,4]  X 軸速度(左右平移),16-bit 無號,高位元在前
+    TX[5,6]  Y 軸速度(前後)
+    TX[7,8]  Z 軸速度(旋轉;TX[9] bit4=1 時為角度,900=90.0°)
+    TX[9]    方向位元:bit2=X 反轉、bit1=Y 反轉、bit0=Z 反轉、bit4=角度模式
+    範例:Y 軸前進 300 → FF FE 01 00 00 01 2C 00 00 00
 
-自動回報訊框(板子主動發送):
-    FF FA + 13 bytes:IMU(accel x/y/z、gyro x/y/z 各 int16 BE + seq)
-    FF FB +  9 bytes:編碼器(4 輪 int16 BE + seq)
-    FF FC +  5 bytes:電池(電壓 int16 BE、功率 int16 BE、seq)
+編碼器回授幀(System mode bit6=1 時板子主動回傳):
+    0x24, 目標A, 實際A, 目標B, 實際B, 目標C, 實際C, [目標D, 實際D], 0x19
+    每值有號 32-bit,高位元在前;三輪幀長 26 bytes、四輪 34 bytes。
 
-直接執行本檔即進入測試模式(不經 ROS,驗證硬體用),例:
-    python3 ominibot_protocol.py --port /dev/ominibot --vx 300 --duration 1.5
-    python3 ominibot_protocol.py --port /dev/ominibot --listen 10
+直接執行本檔即進入測試模式(不經 ROS,實機驗證用;輪子先架空!):
+    python3 ominibot_protocol.py --port /dev/ominibot --y 200 --duration 1
+    python3 ominibot_protocol.py --port /dev/ominibot --listen 5
 """
 import struct
 import threading
@@ -29,28 +30,29 @@ import time
 import serial
 
 
-class OminibotProtocol:
-    """Ominibot HV 串列通訊:速度指令發送 + 自動回報訊框解析"""
+class OminibotHV:
+    """OminiBot HV 串列通訊:速度指令發送 + 編碼器回授解析"""
 
-    # 自動回報訊框:type byte → 後續資料長度
-    AUTO_FRAME_LEN = {0xFA: 13, 0xFB: 9, 0xFC: 5}
+    FRAME_HEAD = b"\xFF\xFE"
+    ENC_HEAD = 0x24   # '$'
+    ENC_TAIL = 0x19
 
     def __init__(self, port, baud=115200, timeout=0.5):
         self.serial = serial.Serial(port, baud, timeout=timeout)
         self._lock = threading.Lock()      # 寫入互斥(指令可能來自多執行緒)
         self._stop_event = threading.Event()
         self._reader_thread = None
-        # 最新的電池資料:(電壓 raw, 功率 raw);電壓 raw 推測為 0.01V 單位
-        self.battery = None
+        # 最新編碼器值:[(目標, 實際), ...] 每輪一組,有號 32-bit raw
+        self.encoder = None
 
     def close(self):
-        """停止讀取執行緒、送停車指令並關閉串列埠"""
+        """停止讀取執行緒、送停車幀並關閉串列埠"""
         self._stop_event.set()
         if self._reader_thread:
             self._reader_thread.join(timeout=2)
             self._reader_thread = None
         try:
-            self.send_velocity(0, 0, 0)
+            self.stop()
         except serial.SerialException:
             pass
         self.serial.close()
@@ -59,59 +61,80 @@ class OminibotProtocol:
     # 指令發送
     # ------------------------------------------------------------------
 
-    def send_velocity(self, vx, vy, vz):
-        """送全向輪速度指令;單位為韌體 raw 值(int),正負代表方向。
+    def send_velocity(self, x, y, z):
+        """送速度幀。參數為板子座標的 raw 值(int,正負代表方向):
 
-        夾在 ±32767(上游宣稱 0~65535,但封包用 int16,取安全範圍)。
+        x = 左右平移、y = 前後、z = 旋轉(對應 ROS 軸向的轉換在節點層做)。
+        數值取絕對值填 16-bit 無號欄位,負號填方向位元(1=反轉)。
         """
-        vx, vy, vz = (int(max(-32767, min(32767, v))) for v in (vx, vy, vz))
-        direction = ((4 if vx < 0 else 0)
-                     | (2 if vy < 0 else 0)
-                     | (1 if vz >= 0 else 0))
-        packet = (b"\xFF\xFE\x01"
-                  + struct.pack(">h", abs(vx))
-                  + struct.pack(">h", abs(vy))
-                  + struct.pack(">h", abs(vz))
+        x, y, z = (int(max(-65535, min(65535, v))) for v in (x, y, z))
+        direction = ((4 if x < 0 else 0)
+                     | (2 if y < 0 else 0)
+                     | (1 if z < 0 else 0))
+        packet = (self.FRAME_HEAD + b"\x01"
+                  + struct.pack(">H", abs(x))
+                  + struct.pack(">H", abs(y))
+                  + struct.pack(">H", abs(z))
                   + struct.pack(">B", direction))
         with self._lock:
             self.serial.write(packet)
 
     def stop(self):
-        """停車(零速度)"""
+        """停車(全零速度幀)"""
         self.send_velocity(0, 0, 0)
 
+    def rotate_angle(self, decidegrees):
+        """旋轉指定角度(bit4 角度模式;900 = 90.0°,正=正轉、負=反轉)"""
+        a = int(max(-65535, min(65535, decidegrees)))
+        direction = 0x10 | (1 if a < 0 else 0)
+        packet = (self.FRAME_HEAD + b"\x01"
+                  + struct.pack(">H", 0) + struct.pack(">H", 0)
+                  + struct.pack(">H", abs(a))
+                  + struct.pack(">B", direction))
+        with self._lock:
+            self.serial.write(packet)
+
     # ------------------------------------------------------------------
-    # 自動回報訊框接收
+    # 編碼器回授接收(需先以設定幀開啟 System mode bit6;預設關閉)
     # ------------------------------------------------------------------
 
-    def start_reader(self, on_battery=None, on_frame=None):
-        """背景執行緒解析自動回報訊框。
+    def start_reader(self, on_encoder=None):
+        """背景執行緒解析編碼器回授幀。
 
-        on_battery(voltage_raw, power_raw):收到電池訊框時呼叫
-        on_frame(frame_type, payload bytes):收到任何訊框時呼叫(除錯用)
+        on_encoder(values):values 為 [(目標, 實際), ...](每輪一組 raw 值)
         """
         def loop():
+            buf = bytearray()
             while not self._stop_event.is_set():
                 try:
-                    head = self.serial.read(1)
-                    if head != b"\xFF":
-                        continue   # 不同步:丟棄直到看到 head
-                    ftype = self.serial.read(1)
-                    if len(ftype) != 1 or ftype[0] not in self.AUTO_FRAME_LEN:
-                        continue
-                    payload = self.serial.read(self.AUTO_FRAME_LEN[ftype[0]])
-                    if len(payload) != self.AUTO_FRAME_LEN[ftype[0]]:
-                        continue
-                    if ftype[0] == 0xFC:
-                        voltage = struct.unpack(">h", payload[0:2])[0]
-                        power = struct.unpack(">h", payload[2:4])[0]
-                        self.battery = (voltage, power)
-                        if on_battery:
-                            on_battery(voltage, power)
-                    if on_frame:
-                        on_frame(ftype[0], payload)
+                    chunk = self.serial.read(64)
                 except serial.SerialException:
                     break
+                if chunk:
+                    buf.extend(chunk)
+                # 掃描緩衝區找 0x24 ... 0x19 幀(三輪 26 bytes、四輪 34 bytes)
+                while buf:
+                    if buf[0] != self.ENC_HEAD:
+                        buf.pop(0)
+                        continue
+                    frame_len = None
+                    for n_motor, length in ((3, 26), (4, 34)):
+                        if len(buf) >= length and buf[length - 1] == self.ENC_TAIL:
+                            frame_len = length
+                            n = n_motor
+                            break
+                    if frame_len is None:
+                        if len(buf) >= 34:
+                            buf.pop(0)   # 對不上幀尾:丟掉這個頭重新同步
+                            continue
+                        break            # 資料還不夠,等下一批
+                    payload = bytes(buf[1:frame_len - 1])
+                    del buf[:frame_len]
+                    raw = struct.unpack(f">{n * 2}i", payload)
+                    values = [(raw[i * 2], raw[i * 2 + 1]) for i in range(n)]
+                    self.encoder = values
+                    if on_encoder:
+                        on_encoder(values)
         self._reader_thread = threading.Thread(target=loop, daemon=True)
         self._reader_thread.start()
 
@@ -122,34 +145,28 @@ class OminibotProtocol:
 
 def _main():
     import argparse
-    parser = argparse.ArgumentParser(description="Ominibot HV 協定測試工具")
+    parser = argparse.ArgumentParser(description="OminiBot HV 協定測試工具(輪子先架空!)")
     parser.add_argument("--port", default="/dev/ominibot")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--vx", type=int, default=0, help="前後速度(raw,正=前)")
-    parser.add_argument("--vy", type=int, default=0, help="左右平移(raw,正=左)")
-    parser.add_argument("--vz", type=int, default=0, help="旋轉(raw,正=逆時針)")
+    parser.add_argument("--x", type=int, default=0, help="左右平移速度(raw)")
+    parser.add_argument("--y", type=int, default=0, help="前後速度(raw,正=前進)")
+    parser.add_argument("--z", type=int, default=0, help="旋轉速度(raw)")
     parser.add_argument("--duration", type=float, default=1.0, help="持續秒數")
     parser.add_argument("--listen", type=float, default=0,
-                        help="只監聽自動回報訊框 N 秒(不送指令)")
+                        help="只監聽編碼器回授 N 秒(不送指令;需板子已開 bit6)")
     args = parser.parse_args()
 
-    bot = OminibotProtocol(args.port, args.baud)
+    bot = OminibotHV(args.port, args.baud)
     try:
         if args.listen > 0:
-            # 監聽模式:印出所有訊框,確認板子有在說話
-            def show(ftype, payload):
-                print(f"frame 0x{ftype:02X}: {payload.hex()}")
-            def show_batt(v, p):
-                print(f"battery: voltage_raw={v}(≈{v / 100:.2f} V?) power_raw={p}")
-            bot.start_reader(on_battery=show_batt, on_frame=show)
+            bot.start_reader(on_encoder=lambda v: print("encoder:", v))
             time.sleep(args.listen)
         else:
-            # 速度模式:以 10 Hz 連發指令 duration 秒後停車
-            print(f"send vx={args.vx} vy={args.vy} vz={args.vz} for {args.duration}s")
+            print(f"send x={args.x} y={args.y} z={args.z} for {args.duration}s")
             end = time.time() + args.duration
             while time.time() < end:
-                bot.send_velocity(args.vx, args.vy, args.vz)
-                time.sleep(0.1)
+                bot.send_velocity(args.x, args.y, args.z)
+                time.sleep(0.05)   # 20 Hz
             print("stop")
     finally:
         bot.close()

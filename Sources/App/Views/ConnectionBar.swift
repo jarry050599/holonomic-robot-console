@@ -54,6 +54,10 @@ struct ConnectionBar: View {
         case .connecting, .connected:
             ros.disconnect()
         }
+        // 把鍵盤焦點從輸入框移開,否則 WASD 會打進輸入框而不是遙控
+        DispatchQueue.main.async {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
     }
 
     /// 狀態指示燈:灰=未連線、橘=連線中、綠=已連線

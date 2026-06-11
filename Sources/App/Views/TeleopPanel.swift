@@ -21,6 +21,11 @@ struct TeleopPanel: View {
         .frame(width: 280)
         .disabled(ros.state != .connected)
         .opacity(ros.state == .connected ? 1 : 0.5)
+        // 點面板任意處把焦點從文字框移開,取回鍵盤遙控
+        .contentShape(Rectangle())
+        .onTapGesture {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
     }
 
     // MARK: - 方向按鈕(全向:含斜向平移)

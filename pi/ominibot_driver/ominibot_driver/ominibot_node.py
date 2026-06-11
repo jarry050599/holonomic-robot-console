@@ -34,8 +34,10 @@ class OminibotNode(Node):
         # --- 連線與速度換算參數(scale 需實測標定) ---
         self.declare_parameter("port", "/dev/ominibot")
         self.declare_parameter("baud", 115200)
-        self.declare_parameter("linear_scale", 1000.0)    # raw per m/s
-        self.declare_parameter("angular_scale", 500.0)    # raw per rad/s
+        # 保守映射:Mac 端上限 0.5 m/s、1.5 rad/s 都恰好對到 max_raw=300
+        self.declare_parameter("linear_scale", 600.0)     # raw per m/s
+        self.declare_parameter("angular_scale", 200.0)    # raw per rad/s
+        self.declare_parameter("max_raw", 300)            # raw 絕對上限(標定前的保險)
         self.declare_parameter("cmd_timeout", 0.5)        # 秒;watchdog
         # 軸正負號(實測方向相反時把對應參數改 -1.0)
         self.declare_parameter("x_sign", 1.0)   # 板子 X(= ROS linear.y)
@@ -51,6 +53,7 @@ class OminibotNode(Node):
         p = lambda name: self.get_parameter(name).value
         self.linear_scale = p("linear_scale")
         self.angular_scale = p("angular_scale")
+        self.max_raw = p("max_raw")
         self.cmd_timeout = p("cmd_timeout")
         self.x_sign, self.y_sign, self.z_sign = p("x_sign"), p("y_sign"), p("z_sign")
         self.encoder_scale = p("encoder_scale")
@@ -69,24 +72,31 @@ class OminibotNode(Node):
         # 20 Hz 重發目前速度幀(逾時則發零),兼作 watchdog
         self.create_timer(0.05, self.tick)
 
-        # --- 里程計狀態 ---
+        # --- 里程計 ---
         if p("publish_odom"):
             self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
             self.pose = [0.0, 0.0, 0.0]          # x, y, theta(odom 座標)
             self.last_enc_time = None
             self.kinematics = self.make_kinematics()
             self.bot.start_reader(on_encoder=self.on_encoder)
+            # 開啟編碼器回傳(bit6 不能記憶、斷電重置,讀-改-寫不影響存檔設定)
+            if self.bot.enable_encoder_feedback():
+                self.get_logger().info("已開啟編碼器回傳,/odom 可用")
+            else:
+                self.get_logger().warning(
+                    "板子未回應 System mode 讀取,/odom 停用(確認底盤電源)")
 
     # ------------------------------------------------------------------
     # /cmd_vel → 速度幀
     # ------------------------------------------------------------------
 
     def on_cmd_vel(self, msg: Twist):
-        """收到速度指令:轉板子座標 raw 並記錄時間"""
+        """收到速度指令:轉板子座標 raw(夾在 ±max_raw)並記錄時間"""
+        clamp = lambda v: max(-self.max_raw, min(self.max_raw, v))
         self.target = (
-            msg.linear.y * self.linear_scale * self.x_sign,   # 板子 X = 左右平移
-            msg.linear.x * self.linear_scale * self.y_sign,   # 板子 Y = 前後
-            msg.angular.z * self.angular_scale * self.z_sign, # 板子 Z = 旋轉
+            clamp(msg.linear.y * self.linear_scale * self.x_sign),   # 板子 X = 左右平移
+            clamp(msg.linear.x * self.linear_scale * self.y_sign),   # 板子 Y = 前後
+            clamp(msg.angular.z * self.angular_scale * self.z_sign), # 板子 Z = 旋轉
         )
         self.last_cmd_time = self.get_clock().now()
         if self.timed_out:

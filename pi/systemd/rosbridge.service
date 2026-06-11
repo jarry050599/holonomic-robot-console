@@ -1,0 +1,13 @@
+[Unit]
+Description=rosbridge websocket server (port 9090)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash && exec ros2 launch rosbridge_server rosbridge_websocket_launch.xml'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

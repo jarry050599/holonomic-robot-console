@@ -1,0 +1,5 @@
+# 機器人序列埠固定別名(短路徑,避開 sllidar SDK 埠名長度 bug)
+# RPLIDAR A2M12:CP2102 轉接晶片
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="rplidar", MODE="0666"
+# Ominibot HV 底盤控制板:FTDI FT-X(idProduct 6015),序號 D34V3T9O
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", ATTRS{serial}=="D34V3T9O", SYMLINK+="ominibot", MODE="0666"

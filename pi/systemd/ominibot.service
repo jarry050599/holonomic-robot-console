@@ -1,0 +1,12 @@
+[Unit]
+Description=Ominibot HV motor driver node
+After=multi-user.target
+
+[Service]
+User=pi
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash && source /home/pi/ros2_ws/install/setup.bash && exec ros2 run ominibot_driver ominibot_node --ros-args -p port:=/dev/ominibot'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

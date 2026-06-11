@@ -2,14 +2,22 @@ import SwiftUI
 
 /// App 進入點
 /// 注意:檔名不能叫 main.swift,否則 @main 會與「頂層程式碼」規則衝突
+/// 無 bundle 的 SPM 執行檔預設會被當成背景程式(沒視窗、沒 Dock 圖示),
+/// 啟動完成時明確設成前景程式並掛上程式繪製的圖示。
+/// 注意:不能在 App.init() 提早碰 NSApplication.shared,會搶在 SwiftUI
+/// 設定活化政策之前建立 app 實例,導致視窗永遠不出現。
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.applicationIconImage = AppIcon.make()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
 @main
 struct RobotConsoleApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
-
-    init() {
-        // SPM 執行檔沒有 bundle 圖示,啟動時設定程式繪製的 Dock 圖示
-        NSApplication.shared.applicationIconImage = AppIcon.make()
-    }
 
     var body: some Scene {
         WindowGroup("機器人控制台") {

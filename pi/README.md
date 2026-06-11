@@ -61,6 +61,33 @@ bit6 預設關閉;開啟需用設定幀(Mode 0x80 子命令 0x09)改 System mode
 python3 $T --port /dev/ominibot --listen 5   # 應看到 encoder: [(目標,實際), ...]
 ```
 
+## 整機啟動、SLAM 建圖與 Nav2 導航
+
+```bash
+# 0. 一次性安裝(需 sudo;deploy.sh 也會裝)
+sudo apt install -y ros-jazzy-slam-toolbox ros-jazzy-navigation2 ros-jazzy-nav2-bringup
+
+# 1. 整機啟動:雷射 + 底盤 + base_link→laser TF + rosbridge
+ros2 launch robot_bringup bringup.launch.py
+#    (udev 別名尚未生效時:ominibot_port:=/dev/serial/by-id/usb-FTDI_OminiBotHV_…)
+
+# 2. SLAM 建圖(另一個終端;用 Mac App 遙控繞房間,/map 漸漸成形)
+ros2 launch robot_bringup slam.launch.py
+~/ros2_ws/src/robot_bringup/scripts/save_map.sh 我的地圖   # 繞完存圖
+
+# 3. Nav2 導航(先停掉 slam.launch)
+ros2 launch robot_bringup nav2.launch.py map:=$HOME/maps/我的地圖.yaml
+ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: map}, pose: {position: {x: 1.0, y: 0.5}, orientation: {w: 1.0}}}"
+```
+
+設計重點:
+- 驅動會發布 `/odom` 與 odom→base_link TF;**編碼器沒資料時自動退回
+  「指令速度開環積分」**,標定前就能先建圖(精度有限,靠 scan matching 補)
+- Nav2 控制器用 **MPPI、motion_model: Omni**(允許 y 向平移),AMCL 用
+  OmniMotionModel;速度上限對齊驅動的保守值 0.3 m/s / 1.0 rad/s
+- 雷射安裝位置用 launch 參數調:`laser_x`/`laser_z`/`laser_yaw`
+
 ## 驗收指令
 
 ```bash

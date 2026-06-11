@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_bringup</name>
+  <version>0.1.0</version>
+  <description>整機啟動:sllidar + ominibot 驅動 + static TF + rosbridge;SLAM 與 Nav2 launch</description>
+  <maintainer email="jarry050599@gmail.com">jarry</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>ominibot_driver</exec_depend>
+  <exec_depend>sllidar_ros2</exec_depend>
+  <exec_depend>rosbridge_server</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

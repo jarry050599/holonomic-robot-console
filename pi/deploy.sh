@@ -8,14 +8,15 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== 1/5 複製檔案到 $PI ==="
 ssh "$PI" 'mkdir -p ~/ros2_ws/src /tmp/robot-deploy'
-scp -r "$DIR/ominibot_driver" "$PI:~/ros2_ws/src/"
+scp -r "$DIR/ominibot_driver" "$DIR/robot_bringup" "$PI:~/ros2_ws/src/"
 scp "$DIR/udev/99-robot.rules" "$DIR"/systemd/*.service "$PI:/tmp/robot-deploy/"
 
 echo "=== 2/5 安裝套件、udev 規則(需要 sudo 密碼) ==="
 ssh -t "$PI" '
 set -e
 sudo apt-get update
-sudo apt-get install -y ros-jazzy-rosbridge-suite python3-serial
+sudo apt-get install -y ros-jazzy-rosbridge-suite python3-serial \
+    ros-jazzy-slam-toolbox ros-jazzy-navigation2 ros-jazzy-nav2-bringup
 
 # udev:若已有 99-robot.rules 先備份再覆蓋
 if [ -f /etc/udev/rules.d/99-robot.rules ]; then
@@ -30,12 +31,12 @@ sleep 1
 ls -l /dev/rplidar /dev/ominibot || echo "⚠ 別名未出現,請確認裝置有接上"
 '
 
-echo "=== 3/5 編譯 ominibot_driver ==="
+echo "=== 3/5 編譯 ominibot_driver + robot_bringup ==="
 ssh "$PI" '
 set -e
 source /opt/ros/jazzy/setup.bash
 cd ~/ros2_ws
-colcon build --packages-select ominibot_driver --symlink-install
+colcon build --packages-select ominibot_driver robot_bringup --symlink-install
 '
 
 echo "=== 4/5 安裝 systemd 服務(rosbridge + sllidar 立即啟用) ==="

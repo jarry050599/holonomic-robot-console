@@ -6,6 +6,11 @@ import SwiftUI
 struct RobotConsoleApp: App {
     @StateObject private var model = AppModel()
 
+    init() {
+        // SPM 執行檔沒有 bundle 圖示,啟動時設定程式繪製的 Dock 圖示
+        NSApplication.shared.applicationIconImage = AppIcon.make()
+    }
+
     var body: some Scene {
         WindowGroup("機器人控制台") {
             RootView(ros: model.ros,

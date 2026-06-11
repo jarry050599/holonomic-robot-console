@@ -7,9 +7,6 @@ struct LidarView: View {
     /// 顯示半徑(公尺):點雲與距離圈依此縮放
     @State private var displayRange = 4.5
 
-    /// 距離圈(公尺)
-    private let rings: [Double] = [1, 2, 4]
-
     var body: some View {
         VStack(spacing: 8) {
             statsBar
@@ -46,7 +43,14 @@ struct LidarView: View {
             // 1 公尺對應的像素數:讓 displayRange 剛好貼齊畫布短邊
             let scale = min(size.width, size.height) / 2 / displayRange
 
-            drawRings(context: context, center: center, scale: scale)
+            // 尚無資料:只顯示等待文字,不畫其他元素
+            guard lidar.hasData else {
+                context.draw(
+                    Text("等待 /scan…").font(.caption).foregroundColor(.secondary),
+                    at: center)
+                return
+            }
+
             drawRobot(context: context, center: center)
 
             // 點雲:機器人座標 x 前方 → 螢幕上方;y 左方 → 螢幕左方
@@ -57,12 +61,6 @@ struct LidarView: View {
                 dots.addRect(CGRect(x: sx - 1.5, y: sy - 1.5, width: 3, height: 3))
             }
             context.fill(dots, with: .color(lidar.isWarning ? .red : .green))
-
-            if !lidar.hasData {
-                context.draw(
-                    Text("等待 /scan…").font(.caption).foregroundColor(.secondary),
-                    at: center)
-            }
         }
         .background(Color.black.opacity(0.85))
         .cornerRadius(8)
@@ -72,22 +70,6 @@ struct LidarView: View {
                 .stroke(lidar.isWarning ? Color.red : Color.clear, lineWidth: 4)
         )
         .frame(minWidth: 360, minHeight: 360)
-    }
-
-    /// 距離圈與標示
-    private func drawRings(context: GraphicsContext, center: CGPoint, scale: CGFloat) {
-        for ring in rings where ring <= displayRange {
-            let r = ring * scale
-            let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
-            context.stroke(Path(ellipseIn: rect),
-                           with: .color(.white.opacity(0.2)), lineWidth: 1)
-            context.draw(
-                Text(String(format: "%g m", ring))
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.4)),
-                at: CGPoint(x: center.x + 4, y: center.y - r - 7),
-                anchor: .leading)
-        }
     }
 
     /// 機器人標記:置中的三角形,尖端朝前(上)

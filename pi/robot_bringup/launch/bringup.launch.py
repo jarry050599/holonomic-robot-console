@@ -8,7 +8,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess,
+                            IncludeLaunchDescription, TimerAction)
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -62,4 +63,11 @@ def generate_launch_description():
 
         # rosbridge WebSocket(9090,Mac App 連這裡)
         IncludeLaunchDescription(AnyLaunchDescriptionSource(rosbridge_launch)),
+
+        # 保險:有時開機後雷射馬達不會自動啟轉,延遲 10 秒補一次
+        # start_motor(已在轉動時呼叫無副作用)
+        TimerAction(period=10.0, actions=[
+            ExecuteProcess(cmd=["ros2", "service", "call", "/start_motor",
+                                "std_srvs/srv/Empty"], output="log"),
+        ]),
     ])

@@ -22,6 +22,11 @@ struct LidarView: View {
         HStack {
             Text("雷射掃描")
                 .font(.headline)
+            if lidar.isStale {
+                Text("⚠ 資料中斷(網路停滯?)")
+                    .font(.caption.bold())
+                    .foregroundColor(.orange)
+            }
             Spacer()
             Text(String(format: "%.1f Hz", lidar.scanHz))
                 .font(.caption.monospacedDigit())

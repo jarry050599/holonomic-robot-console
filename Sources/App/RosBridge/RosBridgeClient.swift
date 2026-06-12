@@ -17,6 +17,8 @@ final class RosBridgeClient: NSObject, ObservableObject {
 
     private var session: URLSession!
     private var task: URLSessionWebSocketTask?
+    /// 保活 ping:偵測「TCP 沒斷但實際停滯」的連線(Wi-Fi 不穩時常見)
+    private var pingTimer: Timer?
 
     /// 已登記的 advertise 意圖(連線後重送)
     private var advertisedTopics: [(topic: String, type: String)] = []
@@ -50,6 +52,7 @@ final class RosBridgeClient: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        stopPing()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         state = .disconnected
@@ -58,9 +61,31 @@ final class RosBridgeClient: NSObject, ObservableObject {
     /// 連線中斷(錯誤或對方關閉)時的統一處理
     private func handleDisconnect(message: String?) {
         guard state != .disconnected else { return }
+        stopPing()
         task = nil
         state = .disconnected
         if let message { lastError = message }
+    }
+
+    /// 每 5 秒 ping 一次;失敗即視為斷線(否則停滯的連線會永遠假裝活著)
+    private func startPing() {
+        stopPing()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let task = self.task else { return }
+                task.sendPing { error in
+                    guard error != nil else { return }
+                    Task { @MainActor in
+                        self.handleDisconnect(message: "連線停滯(ping 失敗),已斷線")
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopPing() {
+        pingTimer?.invalidate()
+        pingTimer = nil
     }
 
     // MARK: - rosbridge 操作
@@ -148,6 +173,7 @@ extension RosBridgeClient: URLSessionWebSocketDelegate {
         Task { @MainActor in
             guard self.task === webSocketTask else { return }
             self.state = .connected
+            self.startPing()
             // 連線成功:重送所有登記過的 advertise 與 subscribe
             for item in self.advertisedTopics {
                 self.send(AdvertiseOp(topic: item.topic, type: item.type))

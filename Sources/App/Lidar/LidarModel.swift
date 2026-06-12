@@ -21,6 +21,9 @@ final class LidarModel: ObservableObject {
     @Published private(set) var nearestDistance: Double?
     /// 是否曾收到資料(顯示「等待 /scan…」用)
     @Published private(set) var hasData = false
+    /// 資料逾時:連線著但超過 2 秒沒新掃描(網路停滯偵測)
+    @Published private(set) var isStale = false
+    private var staleTimer: Timer?
 
     /// 警示門檻:最近障礙物小於此距離畫面變紅
     static let warningDistance = 0.3
@@ -80,6 +83,15 @@ final class LidarModel: ObservableObject {
             let span = now.timeIntervalSince(arrivalTimes[0])
             if span > 0 {
                 scanHz = Double(arrivalTimes.count - 1) / span
+            }
+        }
+        isStale = false
+        // 2 秒沒有下一筆 → 標記資料逾時(WebSocket 停滯但 TCP 未斷的情況)
+        staleTimer?.invalidate()
+        staleTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.isStale = true
+                self?.scanHz = 0
             }
         }
     }

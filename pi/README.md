@@ -21,45 +21,36 @@ ssh-copy-id pi@rpi5.local
 | `ominibot_driver/` | ROS 2 套件,複製到 `~/ros2_ws/src/` 後 colcon build |
 | `systemd/*.service` | 開機自啟;`rosbridge`、`sllidar` 立即啟用,`ominibot` 待硬體驗證後手動啟用 |
 
-## OminiBot HV 協定驗證(啟用驅動前必做)
+## OminiBot HV v1.2 協定(2026-06-12 實機驗證可動)
 
-協定依官方文件 [iCShopMgr/OminiBotHV](https://github.com/iCShopMgr/OminiBotHV)
-(三全向輪,UART 115200,板子收到 10 bytes 自動切 UART 控制模式)。
-先架高機器人(輪子離地)測試:
+⚠ **GitHub iCShopMgr/OminiBotHV 的 2020 PDF(FF FE 幀頭)是舊韌體,對本板無效!**
+本板用「大括號協定」:`0x7B + cmd + 資料 + BCC(XOR) + 0x7D`,固定 14 bytes。
+權威參考:[reference/OminiBot_HV_Meca.py](ominibot_driver/reference/OminiBot_HV_Meca.py)
+(出土自舊 SD 卡);本驅動的幀格式與其位元組級一致。
+
+- `0x25` 整車速度:**單位直接是 m/s、rad/s(×1000 有號 16-bit),不需 raw 標定**
+- 板子主動串流 24 Hz 遙測:實測車速 + IMU 四元數 + 電池(mV)→ 驅動直接
+  發布 `/odom`(速度積分 + IMU yaw)、TF 與 `/battery_voltage`
+- 板子電源開關在 XT60 旁;OFF 時 FTDI 仍會列舉(吃 USB 電),USB 有裝置≠板子活著
+
+測試工具(輪子先架空!):
 
 ```bash
 T=~/ros2_ws/src/ominibot_driver/ominibot_driver/ominibot_protocol.py
-# 小速度測各軸(板子座標;值是韌體 raw 單位,從小開始!)
-python3 $T --port /dev/ominibot --y 200 --duration 1    # 預期:前進(板子 Y 軸=前後)
-python3 $T --port /dev/ominibot --x 200 --duration 1    # 預期:平移(板子 X 軸=左右)
-python3 $T --port /dev/ominibot --z 200 --duration 1    # 預期:原地旋轉
+python3 $T --port /dev/ominibot --read 4               # 讀遙測(被動,安全)
+python3 $T --port /dev/ominibot --x 0.08 --duration 1  # 前進 0.08 m/s
 ```
 
-方向相反 → 不用改程式,調驅動節點參數 `x_sign`/`y_sign`/`z_sign`(±1)。
-
-## 標定(驅動節點參數)
+## 驅動節點參數
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| `linear_scale` | 1000 | raw / (m/s):下固定 raw 速度量實際車速後換算 |
-| `angular_scale` | 500 | raw / (rad/s) |
+| `max_linear` / `max_angular` | 0.5 / 1.5 | 速度上限(m/s、rad/s) |
 | `x_sign` `y_sign` `z_sign` | 1.0 | 軸向正負號(實測相反就改 -1) |
-| `encoder_scale` | 0.001 | 編碼器「實際」raw → 輪面 m/s(/odom 用) |
-| `robot_radius` | 0.15 | 輪心到車中心距離 m(/odom 用) |
-
-標定後把參數加進 `pi/systemd/ominibot.service` 的 `--ros-args -p 名稱:=值`
-再重新部署。
-
-## 里程計 /odom(選配)
-
-板子 System mode **bit6=1** 時會回傳編碼器幀(`0x24 … 0x19`,每值有號
-32-bit),節點會以三全向輪正運動學解出車速並積分發布 `/odom`。
-bit6 預設關閉;開啟需用設定幀(Mode 0x80 子命令 0x09)改 System mode 並
-寫入存檔,建議照官方 PDF(`OminiBotHV_protocol.pdf`)操作後再驗證:
-
-```bash
-python3 $T --port /dev/ominibot --listen 5   # 應看到 encoder: [(目標,實際), ...]
-```
+| `wheel_diameter` `wheel_space` `axle_space` | 60 / 110 / 110 | mm,0x24 車體設定 |
+| `gear_ratio` / `encoder_ppr` | 55 / 165 | 0x23 系統設定 |
+| `use_imu_yaw` | true | /odom 的 yaw 用 IMU 四元數(否則積分 wz) |
+| `battery_scale` | 0.001 | 電池 raw(mV)→ V |
 
 ## 整機啟動、SLAM 建圖與 Nav2 導航
 

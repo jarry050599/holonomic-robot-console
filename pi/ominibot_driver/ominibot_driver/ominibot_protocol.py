@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 # coding=utf-8
-"""OminiBot HV 串列協定層(純協定,不依賴 ROS)。
+"""OminiBot HV v1.2 串列協定層(大括號協定;純協定,不依賴 ROS)。
 
-協定來源:官方 OminiBotHV_protocol.pdf(github.com/iCShopMgr/OminiBotHV)
-本車為三顆全向輪(System mode bit1:0 = 0),UART2 115200;
-板子收到 10 bytes 後自動由 APP 模式切換為 UART 控制,不需初始化。
+⚠ 重要:GitHub iCShopMgr/OminiBotHV 的 2020 PDF(FF FE 幀頭)是舊韌體,
+對本板無效!本板用「大括號協定」,權威參考實作:OminiBot_HV_Meca.py
+(出土自舊 SD 卡,2026-06-12 實機驗證輪子會轉),本檔幀格式照抄該檔。
 
-速度控制幀(1A-1,Mode=1,固定 10 bytes):
-    FF FE 01 | X(u16 BE) | Y(u16 BE) | Z(u16 BE) | 方向位元組
-    方向位元組:bit2=X 反轉、bit1=Y 反轉、bit0=Z 反轉、bit4=角度模式
-    範例:Y 軸前進 300 → FF FE 01 00 00 01 2C 00 00 00
+幀格式:0x7B('{') + cmd + 資料 + BCC + 0x7D('}'),固定 14 bytes
+    BCC = 幀尾前所有 bytes 的 XOR
+    0x23 系統設定、0x24 車體尺寸、0x40 PID(建構子初始化順序:
+    forced_stop → 0.5s → 0x23 → 0.1s → 0x24 → 0.1s → 0x40 → 0.1s)
+    0x25 整車速度:7B 25 02 mode lx(2) ly(2) az(2) 00 00 BCC 7D
+        速度 = m/s × 1000,有號 16-bit BE;第 3 byte 0x00 = 強制停止
+    0x26 單顆馬達、0x33/0x34/0x50 讀回設定/狀態
 
-設定幀(2 章,Mode=0x80):FF FE 80 80 <子命令> <資料 4 bytes> 00
-    寫 System mode:子命令 0x09,資料 = 32-bit 值(高位元組在前)
-    讀 System mode:子命令 0x19,回覆 6 bytes:0x23 0x09 B3 B2 B1 B0
-    ※ System mode bit6(編碼器回傳)與 bit7(命令模式)「不能記憶」,
-      斷電重置,因此執行期讀-改-寫 bit6 不會動到板子存檔設定。
+板子主動串流遙測幀(32 bytes):
+    7B 00 | lx ly az(各 int16,m/s×1000) | IMU 20 bytes
+    (末 8 bytes 為四元數 qw qx qy qz,×1000) | 電池 2 bytes | BCC | 7D
 
-編碼器回授幀(bit6=1 時主動回傳):
-    0x24, 目標A,實際A, 目標B,實際B, 目標C,實際C, [目標D,實際D], 0x19
-    每值有號 32-bit BE;三輪幀長 26 bytes、四輪 34 bytes。
-
-直接執行本檔即進入測試模式(不經 ROS,實機驗證用;輪子先架空!):
-    python3 ominibot_protocol.py --port /dev/ominibot --y 100 --duration 1
-    python3 ominibot_protocol.py --port /dev/ominibot --read-mode
-    python3 ominibot_protocol.py --port /dev/ominibot --listen 5
+測試模式(輪子先架空!):
+    python3 ominibot_protocol.py --port /dev/ominibot --read 3
+    python3 ominibot_protocol.py --port /dev/ominibot --x 0.08 --duration 2
 """
 import struct
 import threading
@@ -34,193 +30,190 @@ import serial
 
 
 class OminibotHV:
-    """OminiBot HV 串列通訊:速度指令、設定讀寫、編碼器回授解析"""
+    """OminiBot HV v1.2 大括號協定(API 與 OminiBot_HV_Meca.py 的 ominibothv 相同)"""
 
-    ENC_HEAD = 0x24    # '$' 編碼器幀頭
-    ENC_TAIL = 0x19
-    REPLY_HEAD = 0x23  # '#' 設定讀取回覆
-
-    def __init__(self, port, baud=115200, timeout=0.1):
-        self.serial = serial.Serial(port, baud, timeout=timeout)
-        self._lock = threading.Lock()       # 寫入互斥
+    def __init__(self, port="/dev/ominibot", baud=115200,
+                 divisor_mode=4, motor_direct=0, encoder_direct=10,
+                 motor_pwm_max=3600, motor_pwm_min=2100, encoder_ppr=165,
+                 wheel_space=110, axle_space=110, gear_ratio=55, wheel_diameter=60,
+                 pos_kp=3000, pos_ki=1050, pos_kd=0, vel_kp=3000, vel_ki=1050):
+        self.ser = serial.Serial(port, baud, timeout=0.5)
+        self.robot_mode = divisor_mode
+        self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._reader_thread = None
-        self.encoder = None                 # 最新編碼器值 [(目標, 實際), ...]
-        self._replies = {}                  # 設定讀取回覆:tag → (value, time)
 
-    def close(self):
-        """停止讀取執行緒、送停車幀並關閉串列埠"""
-        self._stop_event.set()
-        if self._reader_thread:
-            self._reader_thread.join(timeout=2)
-            self._reader_thread = None
-        try:
-            self.stop()
-        except serial.SerialException:
-            pass
-        self.serial.close()
+        # --- 初始化順序(照參考實作) ---
+        self.forced_stop()
+        time.sleep(0.5)
+        # 0x23 系統設定(馬達方向/編碼器方向/PWM 範圍/編碼器 PPR)
+        self._send_frame(0x23,
+                         motor_direct.to_bytes(1, "big")
+                         + encoder_direct.to_bytes(1, "big")
+                         + motor_pwm_max.to_bytes(2, "big")
+                         + motor_pwm_min.to_bytes(2, "big")
+                         + encoder_ppr.to_bytes(2, "big")
+                         + b"\x00\x00")
+        time.sleep(0.1)
+        # 0x24 車體尺寸(輪距/軸距/齒比/輪徑 mm)
+        self._send_frame(0x24,
+                         wheel_space.to_bytes(2, "big")
+                         + axle_space.to_bytes(2, "big")
+                         + gear_ratio.to_bytes(2, "big")
+                         + wheel_diameter.to_bytes(2, "big")
+                         + b"\x00\x00")
+        time.sleep(0.1)
+        # 0x40 PID
+        self._send_frame(0x40,
+                         pos_kp.to_bytes(2, "big") + pos_ki.to_bytes(2, "big")
+                         + pos_kd.to_bytes(2, "big")
+                         + vel_kp.to_bytes(2, "big") + vel_ki.to_bytes(2, "big"))
+        time.sleep(0.1)
 
     # ------------------------------------------------------------------
-    # 速度指令(1A-1)
+    # 幀組裝
     # ------------------------------------------------------------------
 
-    def send_velocity(self, x, y, z):
-        """送速度幀。參數為板子座標 raw 值(int,正負代表方向):
-        x=左右平移、y=前後、z=旋轉(ROS 軸向轉換在節點層做)。
-        """
-        x, y, z = (int(max(-65535, min(65535, v))) for v in (x, y, z))
-        direction = ((4 if x < 0 else 0)
-                     | (2 if y < 0 else 0)
-                     | (1 if z < 0 else 0))
-        packet = (b"\xFF\xFE\x01"
-                  + struct.pack(">HHH", abs(x), abs(y), abs(z))
-                  + struct.pack(">B", direction))
+    @staticmethod
+    def calculate_bcc(data):
+        bcc = 0
+        for byte in data:
+            bcc ^= byte
+        return bcc
+
+    def _send_frame(self, cmd, payload):
+        """7B + cmd + payload + BCC + 7D"""
+        frame = bytearray(b"\x7b") + bytes([cmd]) + payload
+        frame += self.calculate_bcc(frame).to_bytes(1, "big") + b"\x7d"
         with self._lock:
-            self.serial.write(packet)
+            self.ser.write(frame)
 
-    def stop(self):
-        """停車(全零速度幀)"""
-        self.send_velocity(0, 0, 0)
-
-    def rotate_angle(self, decidegrees):
-        """角度模式旋轉(bit4=1;900 = 90.0°)。角度會累計,用完自動歸零。"""
-        a = int(max(-65535, min(65535, decidegrees)))
-        packet = (b"\xFF\xFE\x01"
-                  + struct.pack(">HHH", 0, 0, abs(a))
-                  + struct.pack(">B", 0x10 | (1 if a < 0 else 0)))
-        with self._lock:
-            self.serial.write(packet)
+    @staticmethod
+    def _s16(value):
+        """m/s(或 rad/s)→ ×1000 有號 16-bit BE(同參考的 pack('!i')[2:])"""
+        return struct.pack("!i", int(value * 1000))[2:]
 
     # ------------------------------------------------------------------
-    # 設定幀(2 章):讀-改-寫 System mode 開啟編碼器回傳
+    # 駕駛指令
     # ------------------------------------------------------------------
 
-    def _send_setting_frame(self, sub, data=b"\x00\x00\x00\x00"):
-        packet = b"\xFF\xFE\x80\x80" + bytes([sub]) + data + b"\x00"
-        with self._lock:
-            self.serial.write(packet)
+    def robot_speed(self, lx, ly, az):
+        """整車速度:lx 前後 m/s、ly 左右 m/s、az 旋轉 rad/s(板子做運動學)"""
+        self._send_frame(0x25, b"\x02" + bytes([self.robot_mode])
+                         + self._s16(lx) + self._s16(ly) + self._s16(az)
+                         + b"\x00\x00")
 
-    def read_setting(self, sub, reply_tag, timeout=1.0):
-        """送讀取幀(2C 節)並等回覆;回傳 32-bit 值,逾時回 None。
-        注意:回覆 tag 與請求子命令不同(例:讀 System mode 用 0x19,回覆 tag 0x09)。
-        需先 start_reader()。
+    def motor_speed(self, m1, m2, m3, m4):
+        """單顆馬達速度(除錯用)"""
+        self._send_frame(0x26, b"\x02" + bytes([self.robot_mode])
+                         + self._s16(m1) + self._s16(m2)
+                         + self._s16(m3) + self._s16(m4))
+
+    def forced_stop(self):
+        """強制停止(0x25 第 3 byte = 0x00)"""
+        self._send_frame(0x25, b"\x00" + bytes([self.robot_mode])
+                         + b"\x00" * 8)
+
+    # ------------------------------------------------------------------
+    # 遙測串流解析(板子主動廣播,32 bytes/幀)
+    # ------------------------------------------------------------------
+
+    FRAME_LEN = 32   # 7B 00 vel(6) imu(20) bat(2) BCC 7D
+
+    def start_reader(self, on_telemetry=None):
+        """背景解析遙測幀。on_telemetry(dict):
+        vx, vy, wz(m/s, rad/s)、quat(qw,qx,qy,qz)、battery_raw、bcc_ok
         """
-        self._replies.pop(reply_tag, None)
-        self._send_setting_frame(sub)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if reply_tag in self._replies:
-                return self._replies[reply_tag]
-            time.sleep(0.02)
-        return None
-
-    def read_system_mode(self, timeout=1.0):
-        """讀 System mode(2C-9:子命令 0x19 → 回覆 tag 0x09)"""
-        return self.read_setting(0x19, 0x09, timeout)
-
-    def write_system_mode(self, value):
-        """寫 System mode(2B-9,子命令 0x09)。
-        不另做「寫入設定值」存檔,bit6/bit7 本來就不能記憶,
-        其餘位元維持讀到的原值,不影響板子既有設定。
-        """
-        self._send_setting_frame(0x09, struct.pack(">I", value & 0xFFFFFFFF))
-
-    def enable_encoder_feedback(self):
-        """讀-改-寫開啟編碼器回傳(bit6)。成功回 True,讀不到板子回 False。"""
-        mode = self.read_system_mode()
-        if mode is None:
-            return False
-        if not (mode & 0x40):
-            self.write_system_mode(mode | 0x40)
-        return True
-
-    # ------------------------------------------------------------------
-    # 接收執行緒:編碼器幀(0x24…0x19)與設定回覆(0x23 + tag + 4 bytes)
-    # ------------------------------------------------------------------
-
-    def start_reader(self, on_encoder=None):
-        """背景解析板子回傳。on_encoder(values):每輪 (目標, 實際) raw 值。"""
         def loop():
             buf = bytearray()
             while not self._stop_event.is_set():
                 try:
-                    chunk = self.serial.read(64)
+                    chunk = self.ser.read(64)
                 except serial.SerialException:
                     break
                 if chunk:
                     buf.extend(chunk)
                 while buf:
-                    if buf[0] == self.REPLY_HEAD:
-                        if len(buf) < 6:
-                            break
-                        tag = buf[1]
-                        self._replies[tag] = struct.unpack(">I", bytes(buf[2:6]))[0]
-                        del buf[:6]
-                    elif buf[0] == self.ENC_HEAD:
-                        frame = self._try_encoder_frame(buf)
-                        if frame is None:
-                            if len(buf) >= 34:
-                                buf.pop(0)   # 對不上幀尾:重新同步
-                                continue
-                            break            # 等更多資料
-                        self.encoder = frame
-                        if on_encoder:
-                            on_encoder(frame)
-                    else:
+                    if buf[0] != 0x7B:
                         buf.pop(0)
+                        continue
+                    if len(buf) < self.FRAME_LEN:
+                        break
+                    if buf[self.FRAME_LEN - 1] != 0x7D:
+                        buf.pop(0)   # 假幀頭,重新同步
+                        continue
+                    frame = bytes(buf[:self.FRAME_LEN])
+                    del buf[:self.FRAME_LEN]
+                    bcc_ok = self.calculate_bcc(frame[:30]) == frame[30]
+                    s16 = lambda i: int.from_bytes(frame[i:i + 2], "big", signed=True)
+                    telemetry = {
+                        "vx": s16(2) / 1000, "vy": s16(4) / 1000, "wz": s16(6) / 1000,
+                        # IMU 區段 20 bytes 從 offset 8;四元數在其後段 [12:20]
+                        "quat": (s16(20) / 1000, s16(22) / 1000,
+                                 s16(24) / 1000, s16(26) / 1000),   # qw qx qy qz
+                        "battery_raw": int.from_bytes(frame[28:30], "big"),
+                        "bcc_ok": bcc_ok,
+                    }
+                    if on_telemetry:
+                        on_telemetry(telemetry)
         self._reader_thread = threading.Thread(target=loop, daemon=True)
         self._reader_thread.start()
 
-    def _try_encoder_frame(self, buf):
-        """嘗試從緩衝區頭解析編碼器幀;成功則消耗位元組並回傳值,不足回 None"""
-        for n_motor, length in ((3, 26), (4, 34)):
-            if len(buf) >= length and buf[length - 1] == self.ENC_TAIL:
-                raw = struct.unpack(f">{n_motor * 2}i", bytes(buf[1:length - 1]))
-                del buf[:length]
-                return [(raw[i * 2], raw[i * 2 + 1]) for i in range(n_motor)]
-        return None
+    def close(self):
+        """停止讀取、煞車並關埠"""
+        self._stop_event.set()
+        if self._reader_thread:
+            self._reader_thread.join(timeout=2)
+            self._reader_thread = None
+        try:
+            self.forced_stop()
+        except serial.SerialException:
+            pass
+        self.ser.close()
+
+    # 與參考實作同名的別名
+    serial_close = close
+
+
+# 參考實作的類別名稱別名
+ominibothv = OminibotHV
 
 
 # ----------------------------------------------------------------------
-# 測試模式:不經 ROS 直接驗證硬體與協定
+# 測試模式
 # ----------------------------------------------------------------------
 
 def _main():
     import argparse
-    parser = argparse.ArgumentParser(description="OminiBot HV 協定測試工具(輪子先架空!)")
+    parser = argparse.ArgumentParser(description="OminiBot HV v1.2 協定測試(輪子先架空!)")
     parser.add_argument("--port", default="/dev/ominibot")
-    parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--x", type=int, default=0, help="左右平移速度(raw)")
-    parser.add_argument("--y", type=int, default=0, help="前後速度(raw,正=前進)")
-    parser.add_argument("--z", type=int, default=0, help="旋轉速度(raw)")
-    parser.add_argument("--duration", type=float, default=1.0, help="持續秒數")
-    parser.add_argument("--listen", type=float, default=0,
-                        help="開編碼器回傳並監聽 N 秒(不送速度指令)")
-    parser.add_argument("--read-mode", action="store_true",
-                        help="讀取 System mode 後離開(確認板子有回應)")
+    parser.add_argument("--x", type=float, default=0.0, help="前後 m/s")
+    parser.add_argument("--y", type=float, default=0.0, help="左右 m/s")
+    parser.add_argument("--z", type=float, default=0.0, help="旋轉 rad/s")
+    parser.add_argument("--duration", type=float, default=1.0)
+    parser.add_argument("--read", type=float, default=0, help="只讀遙測 N 秒")
     args = parser.parse_args()
 
-    bot = OminibotHV(args.port, args.baud)
-    bot.start_reader(on_encoder=lambda v: print("encoder:", v))
+    bot = OminibotHV(port=args.port)
+    print("初始化完成(forced_stop + 0x23/0x24/0x40)")
     try:
-        if args.read_mode:
-            mode = bot.read_system_mode()
-            if mode is None:
-                print("讀不到 System mode(板子未上電或未回應)")
-            else:
-                print(f"System mode = 0x{mode:08X}"
-                      f"(驅動類型={mode & 3}, 編碼器回傳={'開' if mode & 0x40 else '關'})")
-        elif args.listen > 0:
-            ok = bot.enable_encoder_feedback()
-            print(f"開啟編碼器回傳:{'成功' if ok else '失敗(板子未回應)'}")
-            time.sleep(args.listen)
+        if args.read > 0:
+            count = [0]
+            def show(t):
+                count[0] += 1
+                if count[0] % 10 == 1:
+                    print(f"vel=({t['vx']:+.3f},{t['vy']:+.3f},{t['wz']:+.3f}) "
+                          f"quat={t['quat']} bat_raw={t['battery_raw']} bcc={'✓' if t['bcc_ok'] else '✗'}")
+            bot.start_reader(on_telemetry=show)
+            time.sleep(args.read)
+            print(f"共收到 {count[0]} 幀遙測")
         else:
-            print(f"send x={args.x} y={args.y} z={args.z} for {args.duration}s")
+            print(f"robot_speed({args.x}, {args.y}, {args.z}) for {args.duration}s")
             end = time.time() + args.duration
             while time.time() < end:
-                bot.send_velocity(args.x, args.y, args.z)
+                bot.robot_speed(args.x, args.y, args.z)
                 time.sleep(0.05)   # 20 Hz
-            print("stop")
+            print("forced_stop")
     finally:
         bot.close()
 

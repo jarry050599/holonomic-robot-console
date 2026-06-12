@@ -45,6 +45,60 @@ struct Float32Msg: Decodable {
     var data: Double
 }
 
+/// geometry_msgs 四元數
+struct RosQuaternion: Codable {
+    var x: Double = 0
+    var y: Double = 0
+    var z: Double = 0
+    var w: Double = 1
+}
+
+/// geometry_msgs/msg/Pose
+struct RosPose: Codable {
+    var position = RosVector3()
+    var orientation = RosQuaternion()
+}
+
+/// nav_msgs/msg/OccupancyGrid(SLAM 的 /map)
+struct OccupancyGrid: Decodable {
+    struct Info: Decodable {
+        var resolution: Double
+        var width: Int
+        var height: Int
+        var origin: RosPose
+    }
+    var info: Info
+    /// -1 未知、0 自由、100 障礙
+    var data: [Int8]
+}
+
+/// geometry_msgs/msg/PoseWithCovarianceStamped(slam_toolbox /pose、amcl /amcl_pose)
+struct PoseWithCovarianceStamped: Decodable {
+    struct PoseWithCov: Decodable { var pose: RosPose }
+    var pose: PoseWithCov
+}
+
+/// std_msgs/msg/Header(發布用;stamp 給零值由接收端取最新 TF)
+struct RosHeader: Encodable {
+    struct Stamp: Encodable {
+        var sec = 0
+        var nanosec = 0
+    }
+    var stamp = Stamp()
+    var frameId: String
+
+    enum CodingKeys: String, CodingKey {
+        case stamp
+        case frameId = "frame_id"
+    }
+}
+
+/// geometry_msgs/msg/PoseStamped(導航目標 /goal_pose)
+struct PoseStamped: Encodable {
+    var header: RosHeader
+    var pose: RosPose
+}
+
 // MARK: - rosbridge 協定封包(op 訊息)
 
 /// 送出:宣告要發布的 topic

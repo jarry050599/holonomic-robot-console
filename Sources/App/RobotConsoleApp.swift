@@ -75,6 +75,14 @@ final class AppModel: ObservableObject {
 
         // 啟動鍵盤監聽與 15 Hz 發布迴圈
         teleop.start()
+
+        // 測試掛鉤:設 ROS_AUTOCONNECT=1 時啟動即自動連線(可用 ROS_HOST/ROS_PORT 覆寫)
+        let env = ProcessInfo.processInfo.environment
+        if env["ROS_AUTOCONNECT"] == "1" {
+            let host = env["ROS_HOST"] ?? UserDefaults.standard.string(forKey: "rosbridge.host") ?? "rpi5.local"
+            let port = Int(env["ROS_PORT"] ?? "") ?? 9090
+            ros.connect(host: host, port: port)
+        }
     }
 
     /// 點地圖 → 發布導航目標(map 座標;朝向先固定朝 +x)
@@ -84,14 +92,6 @@ final class AppModel: ObservableObject {
         pose.position.y = y
         ros.publish(topic: "/goal_pose",
                     msg: PoseStamped(header: RosHeader(frameId: "map"), pose: pose))
-
-        // 測試掛鉤:設 ROS_AUTOCONNECT=1 時啟動即自動連線(可用 ROS_HOST/ROS_PORT 覆寫)
-        let env = ProcessInfo.processInfo.environment
-        if env["ROS_AUTOCONNECT"] == "1" {
-            let host = env["ROS_HOST"] ?? UserDefaults.standard.string(forKey: "rosbridge.host") ?? "rpi5.local"
-            let port = Int(env["ROS_PORT"] ?? "") ?? 9090
-            ros.connect(host: host, port: port)
-        }
     }
 }
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # 機器人統一控制腳本(Mac App 透過 ssh 呼叫;手動使用亦可)
 # 用法:robot.sh bringup|slam|save [名稱]|slam-stop|nav2 [名稱]|nav2-stop|status
-set -u
+# 注意:不可用 set -u,ROS 的 setup.bash 內含未定義變數
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash 2>/dev/null
 

@@ -33,10 +33,42 @@ async def fake_scan_publisher(ws, subscribed):
             "ranges": ranges, "intensities": []}}
         await ws.send(json.dumps(msg))
 
+async def fake_map_publisher(ws, subscribed):
+    """訂閱 /map 後,每 2 秒發一張假地圖(60x40 房間,牆+未知區),
+    並發機器人位姿 /pose(緩慢移動,驗證箭頭方向)"""
+    t0 = time.time()
+    w, h, res = 60, 40, 0.05
+    while True:
+        await asyncio.sleep(2.0)
+        if "/map" not in subscribed:
+            continue
+        t = time.time() - t0
+        data = []
+        for row in range(h):
+            for col in range(w):
+                if row in (0, h - 1) or col in (0, w - 1):
+                    data.append(100)            # 牆
+                elif col > w * 0.7 and row < h * 0.3:
+                    data.append(-1)             # 未知區
+                else:
+                    data.append(0)              # 自由區
+        await ws.send(json.dumps({"op": "publish", "topic": "/map", "msg": {
+            "info": {"resolution": res, "width": w, "height": h,
+                     "origin": {"position": {"x": -1.5, "y": -1.0, "z": 0},
+                                "orientation": {"x": 0, "y": 0, "z": 0, "w": 1}}},
+            "data": data}}))
+        yaw = t * 0.3
+        await ws.send(json.dumps({"op": "publish", "topic": "/pose", "msg": {
+            "pose": {"pose": {
+                "position": {"x": 0.4 * math.cos(t * 0.2), "y": 0.3 * math.sin(t * 0.2), "z": 0},
+                "orientation": {"x": 0, "y": 0,
+                                "z": math.sin(yaw / 2), "w": math.cos(yaw / 2)}}}}}))
+
 async def handler(ws):
     log("CONNECTED")
     subscribed = set()
-    pub_task = asyncio.create_task(fake_scan_publisher(ws, subscribed))
+    tasks = [asyncio.create_task(fake_scan_publisher(ws, subscribed)),
+             asyncio.create_task(fake_map_publisher(ws, subscribed))]
     try:
         async for raw in ws:
             data = json.loads(raw)
@@ -44,6 +76,9 @@ async def handler(ws):
             if op == "publish" and data.get("topic") == "/cmd_vel":
                 m = data["msg"]
                 log(f"cmd_vel x={m['linear']['x']:+.2f} y={m['linear']['y']:+.2f} z={m['angular']['z']:+.2f}")
+            elif op == "publish" and data.get("topic") == "/goal_pose":
+                p = data["msg"]["pose"]["position"]
+                log(f"goal_pose x={p['x']:.2f} y={p['y']:.2f}")
             else:
                 log(f"OP {raw[:200]}")
                 if op == "subscribe":
@@ -51,7 +86,8 @@ async def handler(ws):
     except websockets.ConnectionClosed:
         pass
     finally:
-        pub_task.cancel()
+        for task in tasks:
+            task.cancel()
         log("DISCONNECTED")
 
 async def main():

@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>整機啟動:sllidar + ominibot 驅動 + static TF + rosbridge;SLAM 與 Nav2 launch</description>
   <maintainer email="jarry050599@gmail.com">jarry</maintainer>
-  <license>MIT</license>
+  <license>Apache-2.0</license>
 
   <exec_depend>ominibot_driver</exec_depend>
   <exec_depend>sllidar_ros2</exec_depend>

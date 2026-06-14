@@ -25,8 +25,10 @@ ssh-copy-id pi@rpi5.local
 
 ⚠ **GitHub iCShopMgr/OminiBotHV 的 2020 PDF(FF FE 幀頭)是舊韌體,對本板無效!**
 本板用「大括號協定」:`0x7B + cmd + 資料 + BCC(XOR) + 0x7D`,固定 14 bytes。
-權威參考:[reference/OminiBot_HV_Meca.py](ominibot_driver/reference/OminiBot_HV_Meca.py)
-(出土自舊 SD 卡);本驅動的幀格式與其位元組級一致。
+[ominibot_protocol.py](ominibot_driver/ominibot_driver/ominibot_protocol.py)
+的幀格式經實機驗證(2026-06-12,輪子會轉),協定來源參考
+[iCShop/CIRCUSPi OminiBotHV](https://github.com/iCShopMgr/OminiBotHV) 的
+廠商驅動(該 GitHub 上的 2020 PDF 為舊韌體,對 v1.2 板無效)。
 
 - `0x25` 整車速度:**單位直接是 m/s、rad/s(×1000 有號 16-bit),不需 raw 標定**
 - 板子主動串流 24 Hz 遙測:實測車速 + IMU 四元數 + 電池(mV)→ 驅動直接

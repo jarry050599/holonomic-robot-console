@@ -1,0 +1,10 @@
+Holonomic Robot Console
+Copyright 2026 jarry050599
+
+This product includes software developed for controlling an OminiBot HV
+holonomic robot base over ROS 2.
+
+The OminiBot HV v1.2 serial protocol implementation was reverse-engineered
+and reimplemented from scratch; the brace-framed protocol it speaks is
+referenced from the vendor driver published by iCShop / CIRCUSPi at
+https://github.com/iCShopMgr/OminiBotHV

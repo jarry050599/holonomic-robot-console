@@ -20,5 +20,5 @@ setup(
     maintainer='jarry',
     maintainer_email='jarry050599@gmail.com',
     description='整機啟動與 SLAM/Nav2 launch',
-    license='MIT',
+    license='Apache-2.0',
 )

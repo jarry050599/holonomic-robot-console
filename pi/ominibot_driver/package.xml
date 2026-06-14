@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>Ominibot HV 萬向輪底盤驅動:訂閱 /cmd_vel 轉串列協定指令,含逾時自動停車</description>
   <maintainer email="jarry050599@gmail.com">jarry</maintainer>
-  <license>MIT</license>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>

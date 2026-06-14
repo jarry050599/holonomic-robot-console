@@ -1,6 +1,18 @@
-.build/
+# Swift / SPM
 .build/
 .swiftpm/
 Package.resolved
+
+# macOS
 .DS_Store
 
+# ROS 2(Pi 端在 ~/ros2_ws 編譯,不入庫)
+build/
+install/
+log/
+
+# 產出的地圖
+maps/
+*.pgm
+*.posegraph
+*.data

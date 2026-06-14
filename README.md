@@ -1,13 +1,39 @@
-# 萬向輪機器人控制台
+# 萬向輪機器人控制台 (Holonomic Robot Console)
 
-原生 macOS SwiftUI App(Swift Package,免 Xcode 專案):遙控萬向輪機器人底盤、
-即時顯示雷射點雲。透過 rosbridge WebSocket(JSON)與樹莓派上的 ROS 2 Jazzy 溝通。
+> 原生 macOS SwiftUI 控制台 + 樹莓派 ROS 2 Jazzy 後端,用來遙控全向輪
+> (OminiBot HV)機器人底盤、即時看雷射點雲、SLAM 建圖、點地圖自動導航。
+> 全程用 rosbridge WebSocket(JSON)通訊,Mac 端零外部相依(只用 URLSession)。
+
+授權:Apache-2.0 ｜ 平台:macOS 12+ / Raspberry Pi 5 + Ubuntu 24.04 + ROS 2 Jazzy
 
 ```
-Mac (SwiftUI App) ── WebSocket(rosbridge, 9090)──▶ 樹莓派 rpi5.local
-                                                    ├─ sllidar_ros2 → /scan
-                                                    └─ ominibot_driver ← /cmd_vel
+┌─────────────────────┐        WebSocket            ┌──────────────────────────────┐
+│  Mac (SwiftUI App)   │  rosbridge JSON :9090       │  樹莓派 rpi5.local             │
+│  遙控 / 雷射 / 地圖   │ ◀──────────────────────────▶ │  ├─ rosbridge_server          │
+│  點地圖導航          │   /cmd_vel /scan /map        │  ├─ sllidar_ros2   → /scan    │
+└─────────────────────┘   /odom /goal_pose ...       │  ├─ ominibot_driver ↔ 底盤    │
+                                                      │  └─ slam_toolbox / Nav2       │
+                                                      └──────────────────────────────┘
 ```
+
+## 功能狀態
+
+| 功能 | 狀態 |
+|---|---|
+| 鍵盤/虛擬搖桿遙控、急停、速度上限 | ✅ |
+| 雷射點雲即時顯示(濾噪、直線擬合、錄放) | ✅ |
+| 底盤驅動(OminiBot HV 大括號協定,m/s 直驅) | ✅ 實機驗證 |
+| 里程計 `/odom` + TF(輪速 + IMU 偏航) | ✅ |
+| 連線停滯偵測(ping 保活、資料逾時警示) | ✅ |
+| App 一鍵啟動 Pi、SLAM 建圖、點地圖導航 | ✅ 軟體就緒 |
+| **整機穩定建圖/導航** | ⚠ 受限於供電,見下方「已知問題」 |
+
+### ⚠ 已知問題:供電 brownout
+
+實測中,馬達啟動的瞬間電流會把與底盤共用的電池電壓拉低,導致樹莓派斷電
+重啟——表現為畫面凍結、地圖飄移/星芒狀、SSH 中斷。**這是硬體供電問題,
+非軟體 bug。** 解法:電池充飽、或讓樹莓派獨立供電(5V/5A),不與馬達共用。
+軟體端已加上斷線偵測與 0.5 秒失聯自動煞車。
 
 ## 快速上手
 
@@ -54,7 +80,23 @@ ssh-copy-id pi@rpi5.local   # 一次性
 ## 離線測試(不需樹莓派)
 
 ```bash
-python3 tools/mock_rosbridge.py &                      # 假 rosbridge:模擬 /scan、記錄 /cmd_vel
+python3 tools/mock_rosbridge.py &                      # 假 rosbridge:模擬 /scan、/map、記錄 /cmd_vel
 ROS_AUTOCONNECT=1 ROS_HOST=127.0.0.1 swift run         # 連 127.0.0.1:9090
-tail -f /tmp/mock_rosbridge.log                        # 觀察收到的 cmd_vel
+tail -f /tmp/mock_rosbridge.log                        # 觀察收到的 cmd_vel / goal_pose
 ```
+
+## 硬體
+
+- **Mac**:macOS 12+(Swift 5.7+);App 為 Swift Package,`swift run` 直接跑
+- **運算**:Raspberry Pi 5 + Ubuntu 24.04 + ROS 2 Jazzy
+- **雷射**:RPLIDAR A2M12(CP2102,256000 baud)
+- **底盤**:OminiBot HV v1.2 三全向輪(FTDI,115200,大括號協定 — 見
+  [pi/README.md](pi/README.md);GitHub 上 iCShop 的 2020 PDF 為舊韌體,對本板無效)
+
+## 授權與致謝
+
+- 授權:[Apache-2.0](LICENSE)
+- OminiBot HV 串列協定為自行重寫實作,協定格式參考
+  [iCShop / CIRCUSPi OminiBotHV](https://github.com/iCShopMgr/OminiBotHV) 的廠商驅動
+- 建圖/導航使用 [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) 與
+  [Nav2](https://github.com/ros-navigation/navigation2)

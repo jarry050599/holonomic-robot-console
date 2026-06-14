@@ -15,7 +15,7 @@ setup(
     maintainer='jarry',
     maintainer_email='jarry050599@gmail.com',
     description='Ominibot HV 萬向輪底盤驅動節點',
-    license='MIT',
+    license='Apache-2.0',
     entry_points={
         'console_scripts': [
             'ominibot_node = ominibot_driver.ominibot_node:main',

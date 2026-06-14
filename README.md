@@ -95,7 +95,9 @@ tail -f /tmp/mock_rosbridge.log                        # 觀察收到的 cmd_vel
 
 ## 授權與致謝
 
-- 授權:[Apache-2.0](LICENSE)
+- 授權:[Apache-2.0](LICENSE)(允許自由使用、修改、散布與商用)
+- **商業使用**:Apache-2.0 不強制,但若你將本專案用於商業用途,
+  歡迎(非義務)來信告知作者一聲:**jarry050599@gmail.com**
 - OminiBot HV 串列協定為自行重寫實作,協定格式參考
   [iCShop / CIRCUSPi OminiBotHV](https://github.com/iCShopMgr/OminiBotHV) 的廠商驅動
 - 建圖/導航使用 [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) 與

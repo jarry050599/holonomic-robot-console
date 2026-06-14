@@ -8,3 +8,10 @@ The OminiBot HV v1.2 serial protocol implementation was reverse-engineered
 and reimplemented from scratch; the brace-framed protocol it speaks is
 referenced from the vendor driver published by iCShop / CIRCUSPi at
 https://github.com/iCShopMgr/OminiBotHV
+
+---
+
+This software is licensed under the Apache License 2.0, which permits
+commercial use. As a courtesy (not a license requirement), if you use this
+project commercially, the author would appreciate a heads-up at:
+  jarry050599@gmail.com

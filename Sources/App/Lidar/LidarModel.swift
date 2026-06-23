@@ -25,6 +25,19 @@ final class LidarModel: ObservableObject {
     @Published private(set) var isStale = false
     private var staleTimer: Timer?
 
+    // MARK: - 目標追蹤與測距
+    /// 追蹤模式開關(開啟後點畫面指定目標)
+    @Published var trackingEnabled = false { didSet { if !trackingEnabled { clearTarget() } } }
+    /// 目前追蹤到的目標(機器人座標,公尺);nil = 未鎖定
+    @Published private(set) var trackedPoint: CGPoint?
+    /// 目標距離(公尺)
+    @Published private(set) var trackedDistance: Double?
+    /// 目標方位(弧度,機器人座標:0=正前、+ 左、- 右)
+    @Published private(set) var trackedBearing: Double?
+    /// 目標暫時丟失(連續數幀找不到,保留最後位置)
+    @Published private(set) var targetLost = false
+    private var lostFrames = 0
+
     /// 警示門檻:最近障礙物小於此距離畫面變紅
     static let warningDistance = 0.3
 
@@ -67,6 +80,71 @@ final class LidarModel: ObservableObject {
         points = result.points
         lines = result.lines
         nearestDistance = result.nearest
+        updateTracking()
+    }
+
+    // MARK: - 目標追蹤與測距
+
+    /// 使用者點畫面指定目標(機器人座標,公尺):鎖定最接近點擊處的雷射點
+    func setTarget(robotX x: Double, robotY y: Double) {
+        if let p = nearestPoint(to: CGPoint(x: x, y: y), within: 1.0) {
+            lockOnto(p)
+        } else if let bp = nearestPointAlong(bearing: atan2(y, x), window: 0.25) {
+            // 點擊處附近沒點,改沿點擊方向找最近障礙
+            lockOnto(bp)
+        } else {
+            clearTarget()
+        }
+    }
+
+    func clearTarget() {
+        trackedPoint = nil; trackedDistance = nil; trackedBearing = nil
+        targetLost = false; lostFrames = 0
+    }
+
+    private func lockOnto(_ p: CGPoint) {
+        trackedPoint = p
+        trackedDistance = hypot(p.x, p.y)
+        trackedBearing = atan2(p.y, p.x)
+        targetLost = false
+        lostFrames = 0
+    }
+
+    /// 每幀以 gating 跟蹤:找上一個目標位置附近最近的點,跟著它移動
+    private func updateTracking() {
+        guard trackingEnabled, let prev = trackedPoint else { return }
+        if let p = nearestPoint(to: prev, within: 0.6) {
+            lockOnto(p)
+        } else {
+            lostFrames += 1
+            if lostFrames > 5 { targetLost = true }   // 連續找不到:保留最後位置並標記丟失
+        }
+    }
+
+    /// 找離 q 最近、且在 radius 內的點
+    private func nearestPoint(to q: CGPoint, within radius: Double) -> CGPoint? {
+        var best: CGPoint?
+        var bestD = radius
+        for p in points {
+            let d = hypot(p.x - q.x, p.y - q.y)
+            if d < bestD { bestD = d; best = p }
+        }
+        return best
+    }
+
+    /// 沿指定方位(±window 弧度)找最近障礙點
+    private func nearestPointAlong(bearing: Double, window: Double) -> CGPoint? {
+        var best: CGPoint?
+        var bestR = Double.infinity
+        for p in points {
+            var db = abs(atan2(p.y, p.x) - bearing)
+            if db > .pi { db = 2 * .pi - db }
+            if db <= window {
+                let r = hypot(p.x, p.y)
+                if r < bestR { bestR = r; best = p }
+            }
+        }
+        return best
     }
 
     /// 切換過濾/擬合開關時,用最後一筆掃描立即重算

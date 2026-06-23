@@ -19,6 +19,16 @@ final class RosBridgeClient: NSObject, ObservableObject {
     private var task: URLSessionWebSocketTask?
     /// 保活 ping:偵測「TCP 沒斷但實際停滯」的連線(Wi-Fi 不穩時常見)
     private var pingTimer: Timer?
+    /// 自動重連(非使用者主動斷線時,WiFi 恢復後自動接回)
+    private var reconnectTimer: Timer?
+    private var lastHost: String?
+    private var lastPort: Int?
+    private var userInitiatedDisconnect = false
+    /// 資料停滯自癒:連線著但久未收到任何訊息 → 重建連線(重新訂閱)
+    private var lastInboundTime = Date()
+    private var dataWatchdogTimer: Timer?
+    /// 連線著但超過此秒數沒收到任何訊息,視為停滯並重連
+    private let staleReconnectSeconds: TimeInterval = 8
 
     /// 已登記的 advertise 意圖(連線後重送)
     private var advertisedTopics: [(topic: String, type: String)] = []
@@ -43,6 +53,10 @@ final class RosBridgeClient: NSObject, ObservableObject {
             lastError = "無效的位址:\(trimmed):\(port)"
             return
         }
+        // 記住連線目標供自動重連用;清除「使用者主動斷線」旗標
+        lastHost = trimmed
+        lastPort = port
+        userInitiatedDisconnect = false
         lastError = nil
         state = .connecting
         let task = session.webSocketTask(with: url)
@@ -52,7 +66,10 @@ final class RosBridgeClient: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        userInitiatedDisconnect = true   // 使用者主動斷線:不要自動重連
+        stopReconnect()
         stopPing()
+        stopDataWatchdog()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         state = .disconnected
@@ -62,9 +79,32 @@ final class RosBridgeClient: NSObject, ObservableObject {
     private func handleDisconnect(message: String?) {
         guard state != .disconnected else { return }
         stopPing()
+        stopDataWatchdog()
         task = nil
         state = .disconnected
         if let message { lastError = message }
+        // 非使用者主動斷線 → 啟動自動重連(WiFi 恢復後自動接回)
+        if !userInitiatedDisconnect { startReconnect() }
+    }
+
+    /// 每 3 秒嘗試重連,直到接上或使用者主動斷線
+    private func startReconnect() {
+        guard reconnectTimer == nil, let host = lastHost, let port = lastPort else { return }
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.userInitiatedDisconnect { self.stopReconnect(); return }
+                if self.state == .disconnected {
+                    self.lastError = "連線中斷,自動重連中…"
+                    self.connect(host: host, port: port)
+                }
+            }
+        }
+    }
+
+    private func stopReconnect() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
     }
 
     /// 每 5 秒 ping 一次;失敗即視為斷線(否則停滯的連線會永遠假裝活著)
@@ -86,6 +126,28 @@ final class RosBridgeClient: NSObject, ObservableObject {
     private func stopPing() {
         pingTimer?.invalidate()
         pingTimer = nil
+    }
+
+    /// 資料停滯自癒:連線著但久未收到訊息(訂閱失效/半死連線)→ 主動重建連線
+    private func startDataWatchdog() {
+        stopDataWatchdog()
+        lastInboundTime = Date()
+        dataWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.state == .connected, !self.subscriptions.isEmpty else { return }
+                if Date().timeIntervalSince(self.lastInboundTime) > self.staleReconnectSeconds {
+                    // 久未收到任何資料 → 重建連線(handleDisconnect 會觸發自動重連)
+                    let t = self.task
+                    self.handleDisconnect(message: "資料停滯,重新連線中…")
+                    t?.cancel(with: .abnormalClosure, reason: nil)
+                }
+            }
+        }
+    }
+
+    private func stopDataWatchdog() {
+        dataWatchdogTimer?.invalidate()
+        dataWatchdogTimer = nil
     }
 
     // MARK: - rosbridge 操作
@@ -157,6 +219,7 @@ final class RosBridgeClient: NSObject, ObservableObject {
 
     /// 解析收到的封包並分派給對應 topic 的訂閱者
     private func dispatch(_ data: Data) {
+        lastInboundTime = Date()   // 收到任何資料就更新(供停滯自癒判斷)
         guard let header = try? decoder.decode(IncomingHeader.self, from: data) else { return }
         if header.op == "publish", let topic = header.topic,
            let sub = subscriptions[topic] {
@@ -173,7 +236,9 @@ extension RosBridgeClient: URLSessionWebSocketDelegate {
         Task { @MainActor in
             guard self.task === webSocketTask else { return }
             self.state = .connected
+            self.stopReconnect()        // 接上了,停止重連嘗試
             self.startPing()
+            self.startDataWatchdog()    // 開始監看資料是否持續流入
             // 連線成功:重送所有登記過的 advertise 與 subscribe
             for item in self.advertisedTopics {
                 self.send(AdvertiseOp(topic: item.topic, type: item.type))

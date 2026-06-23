@@ -13,6 +13,7 @@ from launch.actions import (DeclareLaunchArgument, ExecuteProcess,
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -21,6 +22,7 @@ def generate_launch_description():
     laser_x = LaunchConfiguration("laser_x")
     laser_z = LaunchConfiguration("laser_z")
     laser_yaw = LaunchConfiguration("laser_yaw")
+    scan_frequency = LaunchConfiguration("scan_frequency")
 
     rosbridge_launch = os.path.join(
         get_package_share_directory("rosbridge_server"),
@@ -33,8 +35,12 @@ def generate_launch_description():
         DeclareLaunchArgument("laser_x", default_value="0.0"),
         DeclareLaunchArgument("laser_z", default_value="0.10"),
         DeclareLaunchArgument("laser_yaw", default_value="0.0"),
+        # 雷射掃描頻率(僅影響每圈點數;實測無法改 A2M12 馬達轉速,維持預設 10)
+        DeclareLaunchArgument("scan_frequency", default_value="10.0"),
 
         # RPLIDAR A2M12(⚠ 串列埠務必用短路徑,SDK 有埠名長度 bug)
+        # 註:此顆 A2M12 馬達轉速無法調慢(下達較低 motor_pwm 會 OPERATION_TIMEOUT),
+        #     僅能以預設 ~10Hz 運作
         Node(
             package="sllidar_ros2", executable="sllidar_node",
             name="sllidar_node", output="screen",
@@ -42,6 +48,7 @@ def generate_launch_description():
                 "serial_port": lidar_port,
                 "serial_baudrate": 256000,
                 "frame_id": "laser",
+                "scan_frequency": ParameterValue(scan_frequency, value_type=float),
             }],
         ),
 
